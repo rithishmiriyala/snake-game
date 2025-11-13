@@ -1,18 +1,14 @@
 import pygame
 import random
 import sys
+import os
 
-# Initialize
-pygame.init()
-pygame.mixer.init()  # Initialize the sound system
-
-# Load Sound Effects
-eat_sound = pygame.mixer.Sound("hiss-86052.mp3")
-gameover_sound = pygame.mixer.Sound("game-fail-90322.mp3")
-
-# Screen Settings
+# ---------- Config ----------
 WIDTH, HEIGHT = 800, 600
 CELL_SIZE = 20
+FPS_BASE = 10           # base FPS
+SPEED_PER_POINT = 0.3   # how much FPS increases per score point (set 0 to disable)
+HIGH_SCORE_FILE = "highscore.txt"
 
 # Colors
 BLACK = (0, 0, 0)
@@ -21,54 +17,100 @@ DARK_GREEN = (0, 200, 0)
 RED = (255, 0, 0)
 WHITE = (255, 255, 255)
 
+# ---------- Pygame init ----------
+pygame.init()
+# Attempt to init mixer safely
+try:
+    pygame.mixer.init()
+    mixer_inited = True
+except Exception:
+    mixer_inited = False
+
+# Safe sound loading
+def safe_sound(path):
+    if not mixer_inited:
+        return None
+    try:
+        return pygame.mixer.Sound(path)
+    except Exception:
+        return None
+
+eat_sound = safe_sound("hiss-86052.mp3")
+gameover_sound = safe_sound("game-fail-90322.mp3")
+
 # Fonts
+pygame.font.init()
 FONT = pygame.font.SysFont("consolas", 28, bold=True)
 BIG_FONT = pygame.font.SysFont("consolas", 48, bold=True)
 
-# Set up display
+# Display
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("🐍 Snake Game - Uday_Codes")
-
 clock = pygame.time.Clock()
-FPS = 10
 
-# Helper function to draw text
-def draw_text(surface, text, font, color, x, y):
+# ---------- Utility ----------
+def draw_text(surface, text, font, color, center):
     text_obj = font.render(text, True, color)
-    surface.blit(text_obj, (x, y))
+    rect = text_obj.get_rect(center=center)
+    surface.blit(text_obj, rect)
 
-# Draw grid (optional for style)
 def draw_grid():
+    # Optional stylish grid (subtle)
     for x in range(0, WIDTH, CELL_SIZE):
         pygame.draw.line(screen, DARK_GREEN, (x, 0), (x, HEIGHT))
     for y in range(0, HEIGHT, CELL_SIZE):
         pygame.draw.line(screen, DARK_GREEN, (0, y), (WIDTH, y))
 
-# Snake Game
+def load_highscore():
+    try:
+        if os.path.exists(HIGH_SCORE_FILE):
+            with open(HIGH_SCORE_FILE, "r") as f:
+                return int(f.read().strip() or 0)
+    except Exception:
+        pass
+    return 0
+
+def save_highscore(value):
+    try:
+        with open(HIGH_SCORE_FILE, "w") as f:
+            f.write(str(int(value)))
+    except Exception:
+        pass
+
+def random_food_position(exclude_positions):
+    """Return a food position not in exclude_positions (list of [x,y])"""
+    max_x = (WIDTH - CELL_SIZE) // CELL_SIZE
+    max_y = (HEIGHT - CELL_SIZE) // CELL_SIZE
+    attempts = 0
+    while True:
+        attempts += 1
+        pos = [random.randint(0, max_x) * CELL_SIZE,
+               random.randint(0, max_y) * CELL_SIZE]
+        if pos not in exclude_positions:
+            return pos
+        # fallback to avoid infinite loop (shouldn't happen unless board full)
+        if attempts > 1000:
+            return pos
+
+# ---------- Game Loop ----------
 def game_loop():
-    # Snake setup
-    snake = [[100, 100]]
+    snake = [[100, 100], [80, 100], [60, 100]]  # start with small snake
     direction = [CELL_SIZE, 0]
     score = 0
+    highscore = load_highscore()
 
-    # Food setup
-    food = [
-        random.randint(0, (WIDTH - CELL_SIZE) // CELL_SIZE) * CELL_SIZE,
-        random.randint(0, (HEIGHT - CELL_SIZE) // CELL_SIZE) * CELL_SIZE
-    ]
+    food = random_food_position(snake)
 
     running = True
-    while running:
-        screen.fill(BLACK)
-        draw_grid()
+    paused = False
 
-        # Events
+    while running:
+        # dynamic FPS (makes game faster with score)
+        FPS = max(6, int(FPS_BASE + score * SPEED_PER_POINT))
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-
-            # Controls
+                return "quit"
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_UP and direction[1] == 0:
                     direction = [0, -CELL_SIZE]
@@ -78,65 +120,130 @@ def game_loop():
                     direction = [-CELL_SIZE, 0]
                 elif event.key == pygame.K_RIGHT and direction[0] == 0:
                     direction = [CELL_SIZE, 0]
+                elif event.key == pygame.K_p:
+                    paused = not paused
+                elif event.key == pygame.K_ESCAPE:
+                    return "quit"
 
-        # Move snake
-        new_head = [snake[0][0] + direction[0], snake[0][1] + direction[1]]
-        snake.insert(0, new_head)
+        if not paused:
+            # Move snake
+            new_head = [snake[0][0] + direction[0], snake[0][1] + direction[1]]
+            snake.insert(0, new_head)
 
-        # Eat food
-        if snake[0] == food:
-            eat_sound.play()  # 🔊 Play eat sound
-            score += 1
-            food = [
-                random.randint(0, (WIDTH - CELL_SIZE) // CELL_SIZE) * CELL_SIZE,
-                random.randint(0, (HEIGHT - CELL_SIZE) // CELL_SIZE) * CELL_SIZE
-            ]
-        else:
-            snake.pop()
+            # Eat food
+            if snake[0] == food:
+                if eat_sound:
+                    try:
+                        eat_sound.play()
+                    except Exception:
+                        pass
+                score += 1
+                # spawn new food not on snake
+                food = random_food_position(snake)
+            else:
+                snake.pop()
 
-        # Collision: Walls
-        if (snake[0][0] < 0 or snake[0][0] >= WIDTH or
-            snake[0][1] < 0 or snake[0][1] >= HEIGHT):
-            return show_game_over(score)
+            # Collisions: walls
+            if (snake[0][0] < 0 or snake[0][0] >= WIDTH or
+                snake[0][1] < 0 or snake[0][1] >= HEIGHT):
+                # hit wall -> game over
+                if gameover_sound:
+                    try:
+                        gameover_sound.play()
+                    except Exception:
+                        pass
+                return show_game_over(score, highscore)
 
-        # Collision: Self
-        if snake[0] in snake[1:]:
-            return show_game_over(score)
+            
+            if snake[0] in snake[1:]:
+                if gameover_sound:
+                    try:
+                        gameover_sound.play()
+                    except Exception:
+                        pass
+                return show_game_over(score, highscore)
 
-        # Draw snake
-        for block in snake:
-            pygame.draw.rect(screen, GREEN, (block[0], block[1], CELL_SIZE, CELL_SIZE))
+        
+        screen.fill(BLACK)
+        draw_grid()
 
-        # Draw food
+    
+        for i, block in enumerate(snake):
+            color = GREEN if i > 0 else (0, 230, 0)  # head slightly different
+            pygame.draw.rect(screen, color, (block[0], block[1], CELL_SIZE, CELL_SIZE))
+
+        
         pygame.draw.rect(screen, RED, (food[0], food[1], CELL_SIZE, CELL_SIZE))
 
-        # Draw Score
-        draw_text(screen, f"Score: {score}", FONT, WHITE, 10, 10)
+        
+        draw_text(screen, f"Score: {score}", FONT, WHITE, (70, 20))
+        draw_text(screen, f"Highscore: {highscore}", FONT, WHITE, (WIDTH - 130, 20))
+        if paused:
+            draw_text(screen, "PAUSED (P to resume)", BIG_FONT, WHITE, (WIDTH//2, HEIGHT//2))
 
         pygame.display.update()
         clock.tick(FPS)
 
-# Game Over Screen
-def show_game_over(score):
-    gameover_sound.play()  # 🔊 Play game over sound
+    return "quit"
+
+
+def show_game_over(score, highscore):
+    # update and store highscore if needed
+    if score > highscore:
+        highscore = score
+        save_highscore(highscore)
+
+    
     screen.fill(BLACK)
-    draw_text(screen, "Game Over", BIG_FONT, RED, WIDTH//2 - 140, HEIGHT//2 - 80)
-    draw_text(screen, f"Your Score: {score}", FONT, WHITE, WIDTH//2 - 100, HEIGHT//2 - 20)
-    draw_text(screen, "Press R to Restart or Q to Quit", FONT, GREEN, WIDTH//2 - 190, HEIGHT//2 + 40)
-    draw_text(screen, "Follow u_day_codes Instagram", FONT, GREEN, WIDTH//2 - 190, HEIGHT//2 + 80)
+    draw_text(screen, "Game Over", BIG_FONT, RED, (WIDTH//2, HEIGHT//2 - 80))
+    draw_text(screen, f"Your Score: {score}", FONT, WHITE, (WIDTH//2, HEIGHT//2 - 20))
+    draw_text(screen, f"High Score: {highscore}", FONT, WHITE, (WIDTH//2, HEIGHT//2 + 20))
+    draw_text(screen, "Press R to Restart | Q to Quit | M for Main Menu", FONT, GREEN, (WIDTH//2, HEIGHT//2 + 80))
     pygame.display.update()
 
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                return "quit"
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r:
-                    game_loop()
+                    return "restart"
                 elif event.key == pygame.K_q:
-                    pygame.quit()
-                    sys.exit()
+                    return "quit"
+                elif event.key == pygame.K_m:
+                    return "menu"
 
-# Start Game
-game_loop()
+def main_menu():
+    screen.fill(BLACK)
+    draw_text(screen, "🐍 Snake Game", BIG_FONT, GREEN, (WIDTH//2, HEIGHT//2 - 100))
+    draw_text(screen, "Press SPACE to Start", FONT, WHITE, (WIDTH//2, HEIGHT//2))
+    draw_text(screen, "Controls: Arrow Keys to move | P to Pause | Esc to Quit", FONT, WHITE, (WIDTH//2, HEIGHT//2 + 60))
+    draw_text(screen, "Follow u_day_codes Instagram", FONT, GREEN, (WIDTH//2, HEIGHT//2 + 120))
+    pygame.display.update()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    return "start"
+                elif event.key == pygame.K_ESCAPE:
+                    return "quit"
+
+def main():
+    while True:
+        action = main_menu()
+        if action == "quit":
+            break
+        result = game_loop()
+        if result == "quit":
+            break
+        # if restart -> loop continues to show menu again or go straight to game depending on design
+        # Here, showing menu after a game over makes it friendly.
+
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
